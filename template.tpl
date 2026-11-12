@@ -135,6 +135,13 @@ ___TEMPLATE_PARAMETERS___
         ],
         "simpleValueType": true,
         "defaultValue": "debug"
+      },
+      {
+        "type": "TEXT",
+        "name": "systemLogEventType",
+        "displayName": "Event type (System Log)",
+        "simpleValueType": true,
+        "help": "Custom System Log event type. Empty uses event_name. Collection is controlled by the container toggle."
       }
     ]
   }
@@ -149,6 +156,10 @@ const getContainerVersion = require('getContainerVersion');
 const logToConsole = require('logToConsole');
 const getRequestHeader = require('getRequestHeader');
 const encodeUriComponent = require('encodeUriComponent');
+const getTimestampMillis = require('getTimestampMillis');
+const getEventData = require('getEventData');
+const getType = require('getType');
+const Promise = require('Promise');
 
 /**********************************************************************************************/
 
@@ -207,6 +218,9 @@ function sendViaWasterProxy() {
     RequestBody: postBody
   });
 
+  var serialized = JSON.stringify(postBody);
+  var started = getTimestampMillis();
+
   sendHttpRequest(
     postUrl,
     function(statusCode, headers, body) {
@@ -219,6 +233,8 @@ function sendViaWasterProxy() {
         ResponseHeaders: headers,
         ResponseBody: body
       });
+
+      copySystemLog('google_sheets', 'Google Sheets', postUrl, 'POST', serialized, statusCode, body, started);
 
       if (!useOptimisticScenario) {
         if (statusCode >= 200 && statusCode < 400) {
@@ -236,7 +252,7 @@ function sendViaWasterProxy() {
       },
       method: 'POST'
     },
-    JSON.stringify(postBody)
+    serialized
   );
 }
 
@@ -271,6 +287,38 @@ function determinateIsLoggingEnabled() {
   if (data.logType === 'no') return false;
   if (data.logType === 'debug') return isDebug;
   return data.logType === 'always';
+}
+
+/**********************************************************************************************/
+// System Log
+
+// System Log is controlled by the proxy header, never by tag configuration.
+// Deliberately detached: neither delivery nor collector failure gates tag completion.
+function copySystemLog(platform, tagName, requestUrl, requestMethod, requestBody, responseStatus, responseBody, started) {
+  if (getRequestHeader('x-wascer-log') !== '1') return;
+  const elapsed = getTimestampMillis() - started;
+  const duration = elapsed < 0 ? 0 : elapsed > 4294967295 ? 4294967295 : elapsed;
+  Promise.create((resolve) => resolve()).then(() => {
+    const eventName = getEventData('event_name');
+    const envelope = {
+      trace_id: getRequestHeader('x-wascer-trace-id') || '',
+      platform: platform,
+      tag_name: tagName,
+      event_name: getType(eventName) === 'string' ? eventName : '',
+      event_type: data.systemLogEventType || (getType(eventName) === 'string' ? eventName : ''),
+      request_method: requestMethod,
+      request_url: requestUrl,
+      request_body: requestBody,
+      response_status: responseStatus || 0,
+      response_body: getType(responseBody) === 'string' ? responseBody : '',
+      duration_ms: duration
+    };
+    return sendHttpRequest('https://system-log.wascer.internal/log', {
+      method: 'POST',
+      timeout: 500,
+      headers: {'Content-Type': 'application/json'}
+    }, JSON.stringify(envelope));
+  }).then(() => {}, () => {});
 }
 
 
@@ -320,6 +368,10 @@ ___SERVER_PERMISSIONS___
               {
                 "type": 1,
                 "string": "https://waster.sourei.com.br/*"
+              },
+              {
+                "type": 1,
+                "string": "https://system-log.wascer.internal/log"
               }
             ]
           }
@@ -387,6 +439,36 @@ ___SERVER_PERMISSIONS___
                     "string": "x-container-identifier"
                   }
                 ]
+              },
+              {
+                "type": 3,
+                "mapKey": [
+                  {
+                    "type": 1,
+                    "string": "headerName"
+                  }
+                ],
+                "mapValue": [
+                  {
+                    "type": 1,
+                    "string": "x-wascer-log"
+                  }
+                ]
+              },
+              {
+                "type": 3,
+                "mapKey": [
+                  {
+                    "type": 1,
+                    "string": "headerName"
+                  }
+                ],
+                "mapValue": [
+                  {
+                    "type": 1,
+                    "string": "x-wascer-trace-id"
+                  }
+                ]
               }
             ]
           }
@@ -438,6 +520,39 @@ ___SERVER_PERMISSIONS___
       "isEditedByUser": true
     },
     "isRequired": true
+  },
+  {
+    "instance": {
+      "key": {
+        "publicId": "read_event_data",
+        "versionId": "1"
+      },
+      "param": [
+        {
+          "key": "keyPatterns",
+          "value": {
+            "type": 2,
+            "listItem": [
+              {
+                "type": 1,
+                "string": "event_name"
+              }
+            ]
+          }
+        },
+        {
+          "key": "eventDataAccess",
+          "value": {
+            "type": 1,
+            "string": "specific"
+          }
+        }
+      ]
+    },
+    "clientAnnotations": {
+      "isEditedByUser": true
+    },
+    "isRequired": true
   }
 ]
 
@@ -468,3 +583,23 @@ Options:
   without waiting for the API response.
 - Data: Simple table where each row is a cell value (supports GTM variables).
 - Logging: Console logging with debug/always/never modes.
+
+System Log (manual template import; no remote publication):
+Only x-wascer-log: 1 enables a best-effort output copy after the request to the
+Waster proxy finishes. The copy goes only to https://system-log.wascer.internal/log
+(pod loopback, trusted TLS on 443) and carries x-wascer-trace-id as trace_id.
+Event type (System Log) is free text; empty uses event_name.
+What is copied is the call the tag really makes: the proxy URL
+(https://waster.sourei.com.br/google-sheets/proxy), the request body and the proxy
+response body, as the original strings, without masking, projection or truncation.
+The Google Sheets API call made by the proxy is not visible to the tag.
+The proxy request keeps the callback form of sendHttpRequest, unchanged; the copy is
+made inside that callback, from the status and body it receives (a missing status is
+copied as 0 and a missing body as an empty string). No extra error path, headers,
+credentials, config fetch, modes, queue or retry are added.
+The logger is detached from tag completion; late delivery remains best-effort.
+With Use Optimistic Scenario the copy is still sent when the proxy answers.
+The copy itself uses the promise form of sendHttpRequest.
+send_http stays a specific list, with the exact loopback URL added; the logging
+destination is fixed in code and never derives from a tag field.
+read_event_data is limited to event_name.

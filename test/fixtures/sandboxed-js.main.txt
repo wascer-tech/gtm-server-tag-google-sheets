@@ -1,0 +1,129 @@
+const JSON = require('JSON');
+const sendHttpRequest = require('sendHttpRequest');
+const getContainerVersion = require('getContainerVersion');
+const logToConsole = require('logToConsole');
+const getRequestHeader = require('getRequestHeader');
+const encodeUriComponent = require('encodeUriComponent');
+
+/**********************************************************************************************/
+
+const traceId = getRequestHeader('trace-id');
+const useOptimisticScenario = isUIFieldTrue(data.useOptimisticScenario);
+
+const sheetRange = getSheetRange();
+const postBody = getData();
+const postUrl = 'https://waster.sourei.com.br/google-sheets/proxy';
+
+sendViaWasterProxy();
+
+if (useOptimisticScenario) {
+  return data.gtmOnSuccess();
+}
+
+/**********************************************************************************************/
+// Range helpers
+
+function getSheetRange() {
+  var sheetName = data.sheetName ? "'" + data.sheetName + "'!" : '';
+  return sheetName + data.rows;
+}
+
+/**********************************************************************************************/
+// Payload builder
+
+function getData() {
+  var mappedData = [];
+
+  if (data.dataList) {
+    data.dataList.forEach(function(d) {
+      mappedData.push(d.value);
+    });
+  }
+
+  return {
+    spreadsheetName: data.spreadsheetName,
+    range: enc(sheetRange),
+    type: data.type === 'add' ? 'add' : 'edit',
+    values: [mappedData]
+  };
+}
+
+/**********************************************************************************************/
+// Request handler
+
+function sendViaWasterProxy() {
+  log({
+    Name: 'GSheetsWaster',
+    Type: 'Request',
+    TraceId: traceId,
+    EventName: data.type,
+    RequestMethod: 'POST',
+    RequestUrl: postUrl,
+    RequestBody: postBody
+  });
+
+  sendHttpRequest(
+    postUrl,
+    function(statusCode, headers, body) {
+      log({
+        Name: 'GSheetsWaster',
+        Type: 'Response',
+        TraceId: traceId,
+        EventName: data.type,
+        ResponseStatusCode: statusCode,
+        ResponseHeaders: headers,
+        ResponseBody: body
+      });
+
+      if (!useOptimisticScenario) {
+        if (statusCode >= 200 && statusCode < 400) {
+          data.gtmOnSuccess();
+        } else {
+          data.gtmOnFailure();
+        }
+      }
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': enc(getRequestHeader('x-user-id')),
+        'x-container-identifier': enc(getRequestHeader('x-container-identifier'))
+      },
+      method: 'POST'
+    },
+    JSON.stringify(postBody)
+  );
+}
+
+/**********************************************************************************************/
+// Helpers
+
+function enc(val) {
+  return encodeUriComponent(val || '');
+}
+
+function isUIFieldTrue(field) {
+  return [true, 'true'].indexOf(field) !== -1;
+}
+
+/**********************************************************************************************/
+// Logging
+
+function log(rawDataToLog) {
+  if (determinateIsLoggingEnabled()) {
+    logToConsole(JSON.stringify(rawDataToLog));
+  }
+}
+
+function determinateIsLoggingEnabled() {
+  var containerVersion = getContainerVersion();
+  var isDebug = !!(
+    containerVersion &&
+    (containerVersion.debugMode || containerVersion.previewMode)
+  );
+
+  if (!data.logType) return isDebug;
+  if (data.logType === 'no') return false;
+  if (data.logType === 'debug') return isDebug;
+  return data.logType === 'always';
+}

@@ -34,6 +34,40 @@ for anyone to use.
 | Use Optimistic Scenario | Select | Answers without waiting for the write to confirm. |
 | Data | Table | Values written into the row, in column order. |
 | Console Logging | Radio | Controls what the tag logs to the container console. |
+| Event type (System Log) | Text (optional) | Label for the System Log copy. Empty uses the event name. See below. |
+
+## System Log
+
+When the server container has logging turned on, the tag also sends a copy of
+what it sent to the Wascer proxy, and of the answer it got back, to the Wascer
+System Log. The copy holds the request URL, method and body, the response status
+and body, how long the request took, the event name and your **Event type
+(System Log)** label (the event name when the label is empty). You find the
+field under **Logs Settings**.
+
+The tag talks to the Wascer proxy, not to Google directly, so the URL and the
+response in the copy are the proxy's. The request body holds the spreadsheet
+name, the range and the cell values.
+
+This only happens when logging is turned on for the container: the hosting proxy
+sets the `x-wascer-log: 1` request header (and `x-wascer-trace-id` to correlate
+the copy). Without that header the tag does nothing extra. Nothing is masked: the
+request and response bodies are copied exactly as they were sent and received.
+The copy is best effort and never changes the result of the tag. With **Use
+Optimistic Scenario** the copy is still sent once the proxy answers.
+
+## Updating the template
+
+To bring a workspace that already has an older version of this template up to date:
+
+1. In your **server** container, open **Templates**, then **Tag Templates**,
+   and open the Google Sheets template.
+2. Open the three dot menu and choose **Import**.
+3. Pick the new `template.tpl` from this repository and save the template.
+4. **Publish** the workspace (Submit, then Publish) so the live container picks
+   up the new version.
+
+Tags already created from the template keep the values you filled in.
 
 ## Requirements
 
